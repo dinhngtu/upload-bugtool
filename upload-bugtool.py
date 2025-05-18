@@ -1,13 +1,20 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+from __future__ import print_function
 
 import argparse
 import sys
 import os
 import subprocess
-import urllib.parse
 import getpass
 
-# Uploads a file to a Nextcloud/Owncloud shared drop folder.
+try:
+    import urllib.parse as urlparse
+    from urllib.parse import quote as urlquote
+except ImportError:
+    import urlparse
+    from urllib import quote as urlquote
 
 
 def parse_share_link(share_link):
@@ -18,7 +25,7 @@ def parse_share_link(share_link):
     Returns:
         tuple: A tuple containing (base_url, token).
     """
-    parsed_url = urllib.parse.urlparse(share_link)
+    parsed_url = urlparse.urlparse(share_link)
 
     # Determine the base URL
     if parsed_url.path.endswith("/index.php/s/" + parsed_url.path.split("/")[-1]):
@@ -29,7 +36,8 @@ def parse_share_link(share_link):
         base_url = share_link.replace("/s/" + parsed_url.path.split("/")[-1], "")
     else:
         raise ValueError(
-            f"Invalid share link format. Could not determine base URL from: {share_link}"
+            "Invalid share link format. Could not determine base URL from: %s"
+            % share_link
         )
 
     # Extract the token from the path segment after /s/ or /index.php/s/
@@ -42,7 +50,7 @@ def parse_share_link(share_link):
     token = path_segments[token_index]
 
     # Clean up the base URL for potential query parameters
-    base_url = urllib.parse.urlparse(base_url)._replace(query="", fragment="").geturl()
+    base_url = urlparse.urlparse(base_url)._replace(query="", fragment="").geturl()
 
     return base_url, token
 
@@ -64,7 +72,7 @@ def main():
 
     # Check if file exists
     if not os.path.exists(args.file_to_upload):
-        print(f"Error: File not found: {args.file_to_upload}", file=sys.stderr)
+        print("Error: File not found: %s" % args.file_to_upload, file=sys.stderr)
         sys.exit(1)
 
     # Password Handling
@@ -83,33 +91,35 @@ def main():
 
     # Prepare for Upload
     upload_filename_original = os.path.basename(args.file_to_upload)
-    # urllib.parse.quote will handle spaces, hashes, and other special characters
-    upload_filename_escaped = urllib.parse.quote(upload_filename_original)
+    # urlquote will handle spaces, hashes, and other special characters
+    upload_filename_escaped = urlquote(upload_filename_original)
 
     # Construct the target URL
-    target_url_path = f"{base_url}/public.php/webdav/{upload_filename_escaped}"
+    target_url_path = "%s/public.php/webdav/%s" % (base_url, upload_filename_escaped)
 
-    # Perform Upload using curl subprocess with stdout/stderr piped
-    curl_user_cred = f"{folder_token}:{password_val}"
+    curl_user_cred = "%s:%s" % (folder_token, password_val)
+
+    curl_args = [
+        "curl",
+        "-S",
+        "-f",
+        "-T",
+        args.file_to_upload,
+        "-u",
+        curl_user_cred,
+        "-H",
+        "X-Requested-With: XMLHttpRequest",
+        target_url_path,
+    ]
+    # hack: imply that we're running on 8.2 if using python2
+    if sys.version_info[0] == 2:
+        curl_args += [
+            "--ciphers",
+            "ECDHE-RSA-AES256-SHA384,ECDHE-RSA-AES256-GCM-SHA384,AES256-SHA256,AES128-SHA256,ECDHE-ECDSA-AES128-GCM-SHA256",
+        ]
 
     try:
-        subprocess.run(
-            [
-                "curl",
-                "-S",
-                "-f",
-                "-T",
-                args.file_to_upload,
-                "-u",
-                curl_user_cred,
-                "-H",
-                "X-Requested-With: XMLHttpRequest",
-                target_url_path,
-            ],
-            check=True,  # Raise CalledProcessError for non-zero exit codes
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-        )
+        subprocess.check_call(curl_args, stdout=sys.stdout, stderr=sys.stderr)
     except:
         print("curl failed, see output above.", file=sys.stderr)
         sys.exit(1)
