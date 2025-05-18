@@ -55,61 +55,24 @@ def parse_share_link(share_link):
     return base_url, token
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Uploads a file to a Nextcloud/Owncloud shared drop folder."
-    )
-    parser.add_argument(
-        "-p",
-        "--password",
-        action="store_true",
-        help="Prompt for password for the share link (if required).",
-    )
-    parser.add_argument("file_to_upload", help="The path to the file to upload.")
-    parser.add_argument("share_link", help="The Nextcloud/Owncloud share link URL.")
+def upload(base_url, folder_token, password, file):
+    print("Uploading %s" % file, file=sys.stderr)
 
-    args = parser.parse_args()
-
-    # Check if file exists
-    if not os.path.exists(args.file_to_upload):
-        print("Error: File not found: %s" % args.file_to_upload, file=sys.stderr)
-        sys.exit(1)
-
-    # Password Handling
-    password_val = ""
-    if args.password:
-        if sys.stdin.isatty():
-            password_val = getpass.getpass("Enter password for share link: ")
-        else:
-            print(
-                "Error: Cannot prompt for password when not on a TTY.", file=sys.stderr
-            )
-            sys.exit(1)
-
-    # Parse Share Link
-    base_url, folder_token = parse_share_link(args.share_link)
-
-    # Prepare for Upload
-    upload_filename_original = os.path.basename(args.file_to_upload)
-    # urlquote will handle spaces, hashes, and other special characters
-    upload_filename_escaped = urlquote(upload_filename_original)
-
-    # Construct the target URL
-    target_url_path = "%s/public.php/webdav/%s" % (base_url, upload_filename_escaped)
-
-    curl_user_cred = "%s:%s" % (folder_token, password_val)
+    upload_filename = urlquote(os.path.basename(file))
+    target_url = "%s/public.php/webdav/%s" % (base_url, upload_filename)
+    cred = "%s:%s" % (folder_token, password)
 
     curl_args = [
         "curl",
         "-S",
         "-f",
         "-T",
-        args.file_to_upload,
+        file,
         "-u",
-        curl_user_cred,
+        cred,
         "-H",
         "X-Requested-With: XMLHttpRequest",
-        target_url_path,
+        target_url,
     ]
     # hack: imply that we're running on 8.2 if using python2
     if sys.version_info[0] == 2:
@@ -123,6 +86,41 @@ def main():
     except:
         print("curl failed, see output above.", file=sys.stderr)
         sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Uploads a file to a Nextcloud/Owncloud shared drop folder."
+    )
+    parser.add_argument(
+        "-p", action="store_true", help="Prompt for password for the share link."
+    )
+    parser.add_argument("share_link", help="The Nextcloud/Owncloud share link URL.")
+    parser.add_argument("files", nargs="+", help="Files to upload.")
+
+    args = parser.parse_args()
+
+    if any("://" in file for file in args.files):
+        print(
+            "Error: Given file path looks like a URL, did you mix up the syntax?",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    password = ""
+    if args.p:
+        if sys.stdin.isatty():
+            password = getpass.getpass("Enter password for share link: ")
+        else:
+            print(
+                "Error: Cannot prompt for password when not on a TTY.", file=sys.stderr
+            )
+            sys.exit(1)
+
+    base_url, folder_token = parse_share_link(args.share_link)
+
+    for file in args.files:
+        upload(base_url, folder_token, password, file)
 
 
 if __name__ == "__main__":
