@@ -4,10 +4,12 @@
 from __future__ import print_function
 
 import argparse
-import sys
-import os
-import subprocess
 import getpass
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 
 try:
     import urllib.parse as urlparse
@@ -15,6 +17,62 @@ try:
 except ImportError:
     import urlparse
     from urllib import quote as urlquote
+
+try:
+    xrange
+except NameError:
+    xrange = range
+
+
+# Ported from openssh misc.c
+
+
+def cleanhostname(host):
+    if host.startswith("[") and host.endswith("]"):
+        return host[1:-1]
+    return host
+
+
+def colon(s):
+    if not s:
+        return None
+    if s[0] == ":":
+        return None
+    flag = 0
+    if s[0] == "[":
+        flag = 1
+    for i in xrange(len(s)):
+        if s[i] == "@" and i + 1 < len(s) and s[i + 1] == "[":
+            flag = 1
+        elif s[i] == "]":
+            if i + 1 < len(s) and s[i + 1] == ":" and flag:
+                return i + 1
+        elif s[i] == ":":
+            if not flag:
+                return i
+        elif s[i] == "/":
+            return None
+    return None
+
+
+def parse_user_host_path(s):
+    colon_pos = colon(s)
+    if colon_pos is None:
+        raise ValueError("invalid SCP path")
+    host_part = s[:colon_pos]
+    path_part = s[colon_pos + 1 :]
+    # if not path_part:
+    # path_part = "."
+    at_pos = host_part.rfind("@")
+    if at_pos != -1:
+        user_candidate = host_part[:at_pos]
+        host_candidate = host_part[at_pos + 1 :]
+        user = user_candidate if user_candidate else None
+    else:
+        user = None
+        host_candidate = host_part
+    host = cleanhostname(host_candidate)
+    return (user, host, path_part)
 
 
 def parse_share_link(share_link):
@@ -55,7 +113,26 @@ def parse_share_link(share_link):
     return base_url, token
 
 
-def upload(base_url, folder_token, password, file):
+def upload(*, base_url, folder_token, password, file, scp=False, tmpdir=None):
+    if scp:
+        assert tmpdir is not None
+        print("Downloading %s" % file, file=sys.stderr)
+        subprocess.check_call(
+            ["scp", file, tmpdir], stdout=sys.stdout, stderr=sys.stderr
+        )
+
+        if "://" in file:
+            scp_uri = urlparse.urlparse(file)
+            scp_path = scp_uri.path
+        else:
+            (_, _, scp_path) = parse_user_host_path(file)
+        if scp_path is None:
+            raise ValueError("invalid SCP path")
+
+        file = os.path.join(tmpdir, os.path.basename(scp_path))
+        if not os.path.exists(file):
+            raise FileNotFoundError("scp failed to download the file.")
+
     print("Uploading %s" % file, file=sys.stderr)
 
     upload_filename = urlquote(os.path.basename(file))
@@ -95,14 +172,19 @@ def main():
     parser.add_argument(
         "-p", action="store_true", help="Prompt for password for the share link."
     )
+    parser.add_argument(
+        "--scp", action="store_true", help="Treat input file paths as SCP locations."
+    )
     parser.add_argument("share_link", help="The Nextcloud/Owncloud share link URL.")
     parser.add_argument("files", nargs="+", help="Files to upload.")
 
     args = parser.parse_args()
 
-    if any("://" in file for file in args.files):
+    if not args.scp and any(
+        "://" in file and not os.path.exists(file) for file in args.files
+    ):
         print(
-            "Error: Given file path looks like a URL, did you mix up the syntax?",
+            "Error: Given file path looks like a URL and does not exist locally, did you mix up the syntax or forget --scp?",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -119,8 +201,23 @@ def main():
 
     base_url, folder_token = parse_share_link(args.share_link)
 
-    for file in args.files:
-        upload(base_url, folder_token, password, file)
+    tmpdir = None
+    if args.scp:
+        tmpdir = tempfile.mkdtemp()
+
+    try:
+        for file in args.files:
+            upload(
+                base_url=base_url,
+                folder_token=folder_token,
+                password=password,
+                file=file,
+                scp=args.scp,
+                tmpdir=tmpdir,
+            )
+    finally:
+        if tmpdir:
+            shutil.rmtree(tmpdir)
 
 
 if __name__ == "__main__":
